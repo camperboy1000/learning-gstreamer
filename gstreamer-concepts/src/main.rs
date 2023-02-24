@@ -10,6 +10,17 @@ fn main() {
         .property_from_str("pattern", "smpte")
         .build()
         .expect("Failed to create source element");
+
+    let vertigo = gst::ElementFactory::make("vertigotv")
+        .name("vertigo")
+        .build()
+        .expect("Failed to create vertigotv element");
+
+    let convertor = gst::ElementFactory::make("videoconvert")
+        .name("convertor")
+        .build()
+        .expect("Failed to create videoconvert element");
+
     let sink = gst::ElementFactory::make("autovideosink")
         .name("sink")
         .build()
@@ -19,8 +30,19 @@ fn main() {
     let pipeline = gst::Pipeline::builder().name("test-pipeline").build();
 
     // Build pipeline
-    pipeline.add_many(&[&source, &sink]).unwrap();
-    source.link(&sink).expect("Failed to link source with sink");
+    // videotestsrc => vertigotv => videoconvert => autovideosink
+    pipeline
+        .add_many(&[&source, &vertigo, &convertor, &sink])
+        .unwrap();
+    source
+        .link(&vertigo)
+        .expect("Failed to link source with vertigo");
+    vertigo
+        .link(&convertor)
+        .expect("Failed to link vertigo with videoconvert");
+    convertor
+        .link(&sink)
+        .expect("Failed to link videoconvert with sink");
 
     // Start playing
     pipeline
