@@ -1,11 +1,14 @@
 use gst::prelude::*;
+use gstreamer as gst;
 
 struct Stream {
     pipeline: gst::Pipeline,
     source: gst::Element,
-    convert: gst::Element,
-    resample: gst::Element,
-    sink: gst::Element,
+    audioconvert: gst::Element,
+    audioresample: gst::Element,
+    audiosink: gst::Element,
+    videoconvert: gst::Element,
+    videosink: gst::Element,
 }
 
 fn main() {
@@ -21,18 +24,26 @@ fn main() {
             .property_from_str("uri", uri)
             .build()
             .expect("Failed to create uridecodebin element"),
-        convert: gst::ElementFactory::make("audioconvert")
-            .name("convert")
+        audioconvert: gst::ElementFactory::make("audioconvert")
+            .name("audioconvert")
             .build()
             .expect("Failed to create audioconvert element"),
-        resample: gst::ElementFactory::make("audioresample")
-            .name("resample")
+        audioresample: gst::ElementFactory::make("audioresample")
+            .name("audioresample")
             .build()
             .expect("Failed to create audioresample element"),
-        sink: gst::ElementFactory::make("autoaudiosink")
-            .name("sink")
+        audiosink: gst::ElementFactory::make("autoaudiosink")
+            .name("audiosink")
             .build()
             .expect("Failed to create autoaudiosink element"),
+        videoconvert: gst::ElementFactory::make("videoconvert")
+            .name("videoconvert")
+            .build()
+            .expect("Failed to create videoconvert"),
+        videosink: gst::ElementFactory::make("autovideosink")
+            .name("videosink")
+            .build()
+            .expect("Failed to create autovideosink element"),
     };
 
     // Add and link elements to pipeline
@@ -41,23 +52,39 @@ fn main() {
         .pipeline
         .add_many(&[
             &stream.source,
-            &stream.convert,
-            &stream.resample,
-            &stream.sink,
+            &stream.audioconvert,
+            &stream.audioresample,
+            &stream.audiosink,
+            &stream.videoconvert,
+            &stream.videosink,
         ])
         .expect("Failed to add elements to pipeline");
 
-    gst::Element::link_many(&[&stream.convert, &stream.resample, &stream.sink])
-        .expect("Failed to link elements");
+    gst::Element::link_many(&[
+        &stream.audioconvert,
+        &stream.audioresample,
+        &stream.audiosink,
+    ])
+    .expect("Failed to link audio elements");
+
+    stream
+        .videoconvert
+        .link(&stream.videosink)
+        .expect("Failed to link video elements");
 
     stream.source.connect_pad_added(move |src, src_pad| {
         println!("Received new pad {} from {}", src_pad.name(), src.name());
 
-        let sink_pad = stream
-            .convert
+        let audio_sink_pad = stream
+            .audioconvert
             .static_pad("sink")
-            .expect("Failed to get static sink pad from convert");
-        if sink_pad.is_linked() {
+            .expect("Failed to get static sink pad from audioconvert");
+        let video_sink_pad = stream
+            .videoconvert
+            .static_pad("sink")
+            .expect("Failed to get sink pad from videoconvert");
+
+        if audio_sink_pad.is_linked() && video_sink_pad.is_linked() {
             println!("We are already linked. Ignoring...");
             return;
         }
@@ -68,21 +95,38 @@ fn main() {
         let new_pad_struct = new_pad_caps
             .structure(0)
             .expect("Failed to get first structure of pad");
-        let new_pad_type = new_pad_struct.name();
+        let new_pad_type = new_pad_struct.name().as_str();
 
-        let is_audio = new_pad_type.starts_with("audio/x-raw");
-        if !is_audio {
-            println!(
-                "Pad had type {} which is not raw audio. Ignoring...",
-                new_pad_type
-            );
-            return;
+        match new_pad_struct.name().as_str() {
+            "audio/x-raw" => {
+                if audio_sink_pad.is_linked() {
+                    println!("Audio pad is already linked. Ignoring...");
+                    return;
+                };
+
+                match src_pad.link(&audio_sink_pad) {
+                    Ok(_) => println!("Link succeeded (type {})", new_pad_type),
+                    Err(_) => println!("Type is {} but link failed", new_pad_type),
+                };
+            }
+            "video/x-raw" => {
+                if video_sink_pad.is_linked() {
+                    println!("Video pad is already linked. Ignoring...");
+                    return;
+                }
+
+                match src_pad.link(&video_sink_pad) {
+                    Ok(_) => println!("Link succeeded (type {})", new_pad_type),
+                    Err(_) => println!("Type is {} but link failed", new_pad_type),
+                }
+            }
+            _ => {
+                println!(
+                    "Pad had type {} which is not raw audio or video. Ignoring...",
+                    new_pad_type
+                )
+            }
         }
-
-        match src_pad.link(&sink_pad) {
-            Ok(_) => println!("Link succeeded (type {})", new_pad_type),
-            Err(_) => println!("Type is {} but link failed", new_pad_type),
-        };
     });
 
     // Start playing
