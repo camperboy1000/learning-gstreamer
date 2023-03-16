@@ -42,46 +42,52 @@ fn main() {
     while !data.terminate {
         match bus.timed_pop(100 * gst::ClockTime::MSECOND) {
             Some(msg) => handle_message(&mut data, &msg),
-            None => {
-                if data.playing {
-                    // Get the current position
-                    let position: gst::ClockTime = data
-                        .playbin
-                        .query_position()
-                        .expect("Failed to get current position");
-
-                    // Set the duration if we haven't set it yet
-                    if data.duration == gst::ClockTime::NONE {
-                        data.duration = data.playbin.query_duration();
-                    }
-
-                    println!("\rPosition {} / {}", position, data.duration.display());
-
-                    // After 10s, skip to 30s only if seek is enabled and we haven't already seeked
-                    if data.seek_enabled
-                        && !data.seek_done
-                        && position > 10 * gst::ClockTime::SECOND
-                    {
-                        // Perform the seek
-                        println!("Reached 10 seconds, performing seek...");
-                        data.playbin
-                            .seek_simple(
-                                gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
-                                30 * gst::ClockTime::SECOND,
-                            )
-                            .expect("Failed to seek");
-
-                        // Prevent from seeking again
-                        data.seek_done = true;
-                    }
-                }
-            }
+            None => print_status(&mut data),
         }
     }
 
     data.playbin
         .set_state(gst::State::Null)
         .expect("Pipeline shutdown failed");
+}
+
+fn print_status(data: &mut CustomData) {
+    // Most actions don't work if we aren't playing
+    if !data.playing {
+        return;
+    }
+
+    // Get the current position
+    let position: gst::ClockTime = data
+        .playbin
+        .query_position()
+        .expect("Failed to get current position");
+
+    // Set the duration if we haven't set it yet
+    if data.duration == gst::ClockTime::NONE {
+        data.duration = data.playbin.query_duration();
+    }
+
+    println!("\rPosition {} / {}", position, data.duration.display());
+
+    // After 10s, skip to 30s only if seek is enabled and we haven't already seeked
+    if data.seek_enabled && !data.seek_done && position > 10 * gst::ClockTime::SECOND {
+        seek_30_seconds(data);
+    }
+}
+
+fn seek_30_seconds(data: &mut CustomData) {
+    // Perform the seek
+    println!("Reached 10 seconds, performing seek...");
+    data.playbin
+        .seek_simple(
+            gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+            30 * gst::ClockTime::SECOND,
+        )
+        .expect("Failed to seek");
+
+    // Prevent from seeking again
+    data.seek_done = true;
 }
 
 fn handle_message(data: &mut CustomData, msg: &gst::Message) {
@@ -97,46 +103,59 @@ fn handle_message(data: &mut CustomData, msg: &gst::Message) {
             );
             data.terminate = true;
         }
-
         MessageView::Eos(_) => {
             println!("End of stream reached");
             data.terminate = true;
         }
-
-        // Duration changed, update the duration value
         MessageView::DurationChanged(_) => data.duration = data.playbin.query_duration(),
-
         MessageView::StateChanged(state_changed) => {
-            if state_changed
-                .src()
-                .map(|s| s == &data.playbin)
-                .unwrap_or(false)
-            {
-                let new_state = state_changed.current();
-                let old_state = state_changed.old();
-
-                println!(
-                    "Pipeline changed from state {:?} to {:?}",
-                    old_state, new_state
-                );
-
-                data.playing = new_state == gst::State::Playing;
-                if data.playing {
-                    let mut seeking = gst::query::Seeking::new(gst::Format::Time);
-
-                    if data.playbin.query(&mut seeking) {
-                        let (seekable, start, end) = seeking.result();
-
-                        data.seek_enabled = seekable;
-                        match seekable {
-                            true => println!("Seeking is ENABLED from {} to {}", start, end),
-                            false => println!("Seeking is DISABLED"),
-                        }
-                    }
-                }
-            }
+            handle_playbin_state_changed(data, state_changed)
         }
-
         _ => (),
+    }
+}
+
+fn handle_playbin_state_changed(data: &mut CustomData, state_changed: &gst::message::StateChanged) {
+    // Only handled state changes from the playbin element
+    if state_changed
+        .src()
+        .map(|s| s != &data.playbin)
+        .unwrap_or(true)
+    {
+        return;
+    }
+
+    let new_state = state_changed.current();
+    let old_state = state_changed.old();
+
+    println!(
+        "Pipeline changed from state {:?} to {:?}",
+        old_state, new_state
+    );
+
+    data.playing = new_state == gst::State::Playing;
+
+    query_seekable(data);
+}
+
+fn query_seekable(data: &mut CustomData) {
+    // We can't update values if not playing
+    if !data.playing {
+        return;
+    }
+
+    let mut seeking = gst::query::Seeking::new(gst::Format::Time);
+
+    // Bail out if querying failed
+    if !data.playbin.query(&mut seeking) {
+        return;
+    }
+
+    let (seekable, start, end) = seeking.result();
+
+    data.seek_enabled = seekable;
+    match seekable {
+        true => println!("Seeking is ENABLED from {} to {}", start, end),
+        false => println!("Seeking is DISABLED"),
     }
 }
